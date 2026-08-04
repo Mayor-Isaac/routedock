@@ -32,11 +32,13 @@ export const metadata: Metadata = {
     description: 'One SDK for x402, MPP charge, and MPP session on Stellar. Agents pay for services with a single function call.',
     siteName: 'RouteDock',
     type: 'website',
+    images: [{ url: '/og.png', width: 1200, height: 630, alt: 'RouteDock — unified agent payment execution on Stellar' }],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'RouteDock',
     description: 'Unified payment execution for autonomous agents on Stellar.',
+    images: ['/og.png'],
   },
   icons: {
     icon: '/logo.svg',
