@@ -32,3 +32,6 @@ DRIP7_ISSUES.md
 apps/web/.env.production.local
 apps/web/.env.cf.production
 .dev.vars
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
