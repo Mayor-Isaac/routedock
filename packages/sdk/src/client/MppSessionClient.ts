@@ -18,7 +18,7 @@ import type {
   DisputeStatus,
   SessionOptions,
   SessionEvent,
-  SessionTimeoutPayload,
+  SessionEventPayloadMap,
 } from '../types.js'
 import { DEFAULT_MAX_SESSION_DURATION_MS } from '../types.js'
 import {
@@ -32,6 +32,10 @@ import {
 import { withRetry, type RetryPolicy } from '../internal/retry.js'
 
 const MIN_REFUND_WAITING_PERIOD = 17_280
+
+/** Internal listener shape: every event's payload, unioned. The public on()
+ * signature narrows this per event through SessionEventPayloadMap. */
+type SessionListener = (payload: SessionEventPayloadMap[SessionEvent]) => void
 
 /** WebSocket-readyState values (mirrors the WHATWG WebSocket constants). */
 const WS_CONNECTING = 0
@@ -166,16 +170,26 @@ export class MppSessionClient {
     // stranded indefinitely. The timer is cleared as soon as the session is
     // closed manually so a normal lifecycle never triggers the guard.
     const maxDurationMs = options?.maxDurationMs ?? DEFAULT_MAX_SESSION_DURATION_MS
-    const listeners = new Map<SessionEvent, Set<(payload: SessionTimeoutPayload) => void>>()
+    const listeners = new Map<SessionEvent, Set<SessionListener>>()
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     let closed = false
 
-    const emit = (event: SessionEvent, payload: SessionTimeoutPayload): void => {
+    const emit = <E extends SessionEvent>(
+      event: E,
+      payload: SessionEventPayloadMap[E],
+    ): void => {
       const set = listeners.get(event)
       if (!set) return
       for (const listener of set) {
         try {
-          listener(payload)
+          const returned: unknown = listener(payload)
+          // A listener may be declared async despite the void signature; its
+          // rejection would otherwise surface as an unhandled rejection.
+          if (returned && typeof (returned as PromiseLike<unknown>).then === 'function') {
+            void Promise.resolve(returned).catch(() => {
+              /* async listener rejected — swallowed, like a synchronous throw */
+            })
+          }
         } catch {
           // A misbehaving listener must not break session teardown.
         }
@@ -542,18 +556,21 @@ export class MppSessionClient {
         }
       },
 
-      on(
-        event: SessionEvent,
-        listener: (payload: SessionTimeoutPayload) => void,
+      on<E extends SessionEvent>(
+        event: E,
+        listener: (payload: SessionEventPayloadMap[E]) => void,
       ): () => void {
         let set = listeners.get(event)
         if (!set) {
           set = new Set()
           listeners.set(event, set)
         }
-        set.add(listener)
+        // Safe by construction: on() only stores a listener under its own
+        // event, and emit() only ever calls it with that event's payload.
+        const stored = listener as SessionListener
+        set.add(stored)
         return () => {
-          set?.delete(listener)
+          set?.delete(stored)
         }
       },
     }
@@ -564,10 +581,17 @@ export class MppSessionClient {
       timeoutId = setTimeout(() => {
         if (closed) return
         emit('session:timeout', { maxDurationMs })
-        // Best-effort auto-close; errors are surfaced to listeners via the
-        // event, not thrown into the timer callback (no one would catch them).
-        void handle.close().catch(() => {
-          /* auto-close failed — channel may need manual recovery via refund */
+        // Best-effort auto-close. A rejection cannot be thrown into a timer
+        // callback (nothing would catch it), so it is surfaced as a
+        // 'session:close-failed' event and a warning — the caller has no other
+        // way to learn the collateral is still locked.
+        void handle.close().catch((error: unknown) => {
+          emit('session:close-failed', { maxDurationMs, error })
+          console.warn(
+            `RouteDock: maxDuration auto-close failed after ${maxDurationMs}ms — ` +
+              'the channel may still hold collateral; retry close() or call requestRefund().',
+            error,
+          )
         })
       }, maxDurationMs)
       // Don't keep a Node process alive solely for this safety timer.
