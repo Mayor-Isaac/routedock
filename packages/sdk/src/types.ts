@@ -4,6 +4,7 @@
  *
  * Section 5 of ROUTEDOCK_MASTER.md is the canonical specification.
  */
+import type { Store } from 'mppx'
 
 export type PaymentMode = 'x402' | 'mpp-charge' | 'mpp-session' | 'mpp-session-ws'
 
@@ -279,6 +280,16 @@ export interface SessionOptions {
    * Infinity to disable the guard (not recommended).
    */
   maxDurationMs?: number
+  /**
+   * Optional persistent store for the client-side cumulative baseline.
+   *
+   * Every challenge is validated against what this client has already signed,
+   * so without a store a session refuses a challenge that reports a non-zero
+   * cumulative — it cannot tell how much a channel already owes from an earlier
+   * session (e.g. across an agent restart that skipped `close()`). Supply a
+   * store to resume such a channel, or close it first.
+   */
+  store?: Store.Store
 }
 
 /**

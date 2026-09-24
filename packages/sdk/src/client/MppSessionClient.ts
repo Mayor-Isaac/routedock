@@ -7,7 +7,9 @@
  * @stellar/mpp library handles the 402 challenge-response cycle.
  */
 import { Keypair, Networks } from '@stellar/stellar-sdk'
+import { STELLAR_PUBNET, STELLAR_TESTNET } from '@stellar/mpp'
 import { stellar } from '@stellar/mpp/channel/client'
+import { Challenge } from 'mppx'
 import { Mppx } from 'mppx/client'
 import type {
   RouteDockManifest,
@@ -30,6 +32,7 @@ import {
   wrapFetchError,
 } from '../errors.js'
 import { withRetry, type RetryPolicy } from '../internal/retry.js'
+import { usdcToStroops } from '../internal/usdc.js'
 
 const MIN_REFUND_WAITING_PERIOD = 17_280
 
@@ -103,7 +106,38 @@ function defaultWebSocketFactory(
 /** The subset of the mppx client used by the WebSocket transport. */
 interface WsMppxLike {
   rawFetch: typeof globalThis.fetch
-  createCredential: (response: Response) => Promise<string>
+  createCredential: (
+    response: Response,
+    context?: { cumulativeAmount: string },
+  ) => Promise<string>
+}
+
+/**
+ * Validates a provider challenge, reserves the next cumulative amount, and hands
+ * it to `create` as an explicit context. Passed into the WebSocket transport,
+ * which runs outside the openSession closure and its reservation state.
+ */
+type GuardedCredentialCreator = (
+  challenge: Challenge.Challenge,
+  create: (cumulativeAmount: string) => Promise<string>,
+) => Promise<string>
+
+/** Parses a base-10 integer string; null when malformed (never throws). */
+function parseIntegerString(value: string): bigint | null {
+  return /^\d+$/.test(value) ? BigInt(value) : null
+}
+
+/**
+ * Client-side cumulative store key — mirrors the entry @stellar/mpp's channel
+ * client writes, so a session can seed its baseline from the same entry.
+ */
+function clientCumulativeStoreKey(networkId: string, channel: string): string {
+  return `stellar:channel:client:${networkId}:${channel}:cumulative`
+}
+
+/** Mirrors @stellar/mpp's resolveNetworkId for the store key (default testnet). */
+function resolveStoreNetworkId(network: string | undefined): string {
+  return network === STELLAR_PUBNET ? STELLAR_PUBNET : STELLAR_TESTNET
 }
 
 export class MppSessionClient {
@@ -142,10 +176,161 @@ export class MppSessionClient {
     let currentCumulative = 0n
     let vouchersIssued = 0
 
+    // ── Per-voucher challenge guard ─────────────────────────────────────────
+    // The provider authors the 402 challenge and the channel client signs the
+    // cumulative amount it contains, so an unchecked challenge lets a provider
+    // name a cumulative just under the channel deposit and drain it with one
+    // voucher. Every challenge is validated against the signed manifest here,
+    // and the signed value is always this client's own arithmetic.
+    let rateStroops: bigint
+    try {
+      rateStroops = usdcToStroops(pricing.rate)
+    } catch (err) {
+      throw new RouteDockManifestError(
+        `manifest.pricing.${mode}.rate is not a valid USDC amount: "${pricing.rate}"`,
+        { cause: err },
+      )
+    }
+
+    const store = options?.store
+    // Next cumulative this client is willing to sign. null until the first
+    // challenge seeds it (from the store when one is configured).
+    let reservedCumulative: bigint | null = null
+    // Memoized first-challenge store read, so concurrent vouchers share one
+    // round-trip and cannot both seed from a stale baseline.
+    let storeSeed: Promise<bigint> | undefined
+
+    const seedFromStore = (networkId: string, channel: string): Promise<bigint> => {
+      storeSeed ??= Promise.resolve(
+        store!.get(clientCumulativeStoreKey(networkId, channel)),
+      ).then((stored) => {
+        if (stored && typeof stored === 'object' && 'amount' in stored) {
+          const raw = (stored as { amount: unknown }).amount
+          const amount = typeof raw === 'string' ? parseIntegerString(raw) : null
+          if (amount === null) {
+            throw new RouteDockChannelStateError(
+              `Stored cumulative for channel ${channel} is not an integer string: ${JSON.stringify(raw)}`,
+            )
+          }
+          return amount
+        }
+        return 0n
+      })
+      return storeSeed
+    }
+
+    /**
+     * Validates a provider challenge and reserves the next cumulative amount.
+     * Throws RouteDockChannelStateError before anything can be signed. The
+     * reservation is advanced synchronously once validation settles, so
+     * concurrent vouchers each get a distinct value.
+     */
+    const reserveNextCumulative = async (challenge: Challenge.Challenge): Promise<bigint> => {
+      // challenge.request is an untyped record on the generic Challenge type,
+      // so every field is read defensively rather than trusted.
+      const request = challenge.request
+
+      const channelValue = request['channel']
+      if (typeof channelValue !== 'string' || channelValue !== channelFactory) {
+        throw new RouteDockChannelStateError(
+          `Challenge names channel ${String(channelValue)}, but the manifest channel_factory is ${channelFactory}`,
+        )
+      }
+
+      const amountValue = request['amount']
+      const amount = typeof amountValue === 'string' ? parseIntegerString(amountValue) : null
+      if (amount === null) {
+        throw new RouteDockChannelStateError(
+          `Challenge request.amount is not a base-10 integer string: ${JSON.stringify(amountValue)}`,
+        )
+      }
+      if (amount !== rateStroops) {
+        throw new RouteDockChannelStateError(
+          `Challenge request.amount ${amount} does not match the manifest rate ${rateStroops} stroops per voucher`,
+        )
+      }
+
+      const methodDetailsValue = request['methodDetails']
+      const methodDetails =
+        methodDetailsValue !== null && typeof methodDetailsValue === 'object'
+          ? (methodDetailsValue as Record<string, unknown>)
+          : undefined
+
+      let serverReported = 0n
+      if (methodDetails && 'cumulativeAmount' in methodDetails) {
+        const rawCumulative = methodDetails['cumulativeAmount']
+        const parsed =
+          typeof rawCumulative === 'string' ? parseIntegerString(rawCumulative) : null
+        if (parsed === null) {
+          throw new RouteDockChannelStateError(
+            `Challenge methodDetails.cumulativeAmount is not a base-10 integer string: ${JSON.stringify(rawCumulative)}`,
+          )
+        }
+        serverReported = parsed
+      }
+
+      let baseline = reservedCumulative
+      if (baseline === null) {
+        if (store) {
+          const challengedNetwork = methodDetails?.['network']
+          const seeded = await seedFromStore(
+            resolveStoreNetworkId(
+              typeof challengedNetwork === 'string' ? challengedNetwork : undefined,
+            ),
+            channelValue,
+          )
+          // Another concurrent voucher may have seeded while this one awaited.
+          baseline = reservedCumulative ?? seeded
+        } else if (serverReported === 0n) {
+          baseline = 0n
+        } else {
+          throw new RouteDockChannelStateError(
+            `Challenge reports cumulative ${serverReported} for a channel this client has no baseline for. ` +
+              'Pass a `store` in SessionOptions so the signed cumulative survives restarts, or close the channel before reusing it.',
+          )
+        }
+      }
+
+      if (serverReported > baseline) {
+        throw new RouteDockChannelStateError(
+          `Challenge reports cumulative ${serverReported}, above the locally reserved baseline ${baseline}`,
+        )
+      }
+
+      const next = baseline + rateStroops
+      reservedCumulative = next
+      return next
+    }
+
+    /**
+     * Releases a reservation whose credential was never created, so the next
+     * voucher re-uses the value instead of paying a gap. Only the most recent
+     * reservation can be released — an earlier one has been superseded, and
+     * re-issuing it would duplicate a cumulative.
+     */
+    const releaseReservation = (reserved: bigint): void => {
+      if (reservedCumulative === reserved) {
+        reservedCumulative = reserved - rateStroops
+      }
+    }
+
+    const createGuardedCredential: GuardedCredentialCreator = async (challenge, create) => {
+      const next = await reserveNextCumulative(challenge)
+      try {
+        return await create(next.toString())
+      } catch (err) {
+        releaseReservation(next)
+        throw err
+      }
+    }
+
     // Bound before the handle literal so the transport can be selected inside
     // the SessionHandle (whose `this` is the handle, not this client).
-    const streamWs = (u: string, m: WsMppxLike): AsyncIterable<unknown> =>
-      this.streamWebSocket(u, m)
+    const streamWs = (
+      u: string,
+      m: WsMppxLike,
+      createCredential: GuardedCredentialCreator,
+    ): AsyncIterable<unknown> => this.streamWebSocket(u, m, createCredential)
 
     const mppx = Mppx.create({
       polyfill: false,
@@ -153,6 +338,7 @@ export class MppSessionClient {
         stellar.channel({
           commitmentKey,
           sourceAccount: this.keypair.publicKey(),
+          ...(store ? { store } : {}),
           onProgress(event) {
             if (event.type === 'signed') {
               currentCumulative = BigInt(event.cumulativeAmount)
@@ -160,6 +346,12 @@ export class MppSessionClient {
           },
         }),
       ],
+      // mppx runs onChallenge on the HTTP path only (createCredential skips it),
+      // so the WebSocket path runs the same guard inside streamWebSocket.
+      onChallenge: (challenge, helpers) =>
+        createGuardedCredential(challenge, (cumulativeAmount) =>
+          helpers.createCredential({ cumulativeAmount }),
+        ),
     })
 
     const retryPolicy = this.retryPolicy
@@ -236,7 +428,7 @@ export class MppSessionClient {
           // WebSocket transport: one connection per stream() call, with one
           // voucher negotiated over HTTP before the upgrade. Each connection
           // counts as one voucher issued.
-          for await (const item of streamWs(url, mppx)) {
+          for await (const item of streamWs(url, mppx, createGuardedCredential)) {
             vouchersIssued++
             yield item
           }
@@ -618,6 +810,7 @@ export class MppSessionClient {
   private async *streamWebSocket(
     url: string,
     mppx: WsMppxLike,
+    createCredential: GuardedCredentialCreator,
   ): AsyncIterable<unknown> {
     // ── 1 + 2: channel establishment + voucher negotiation over HTTP ────────
     const request: RequestInit = { method: 'GET' }
@@ -642,7 +835,12 @@ export class MppSessionClient {
 
     let credential: string
     try {
-      credential = await mppx.createCredential(probe)
+      // mppx.createCredential does not run onChallenge, so the WebSocket path
+      // validates the probe challenge with the same guard before signing — an
+      // inflated challenge must never reach the commitment key.
+      credential = await createCredential(Challenge.fromResponse(probe), (cumulativeAmount) =>
+        mppx.createCredential(probe, { cumulativeAmount }),
+      )
     } catch (err) {
       throw wrapFetchError(err, 'Voucher credential')
     }
