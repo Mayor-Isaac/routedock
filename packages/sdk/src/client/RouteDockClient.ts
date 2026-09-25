@@ -1,5 +1,5 @@
 import { Keypair, Horizon } from '@stellar/stellar-sdk'
-import { fetchManifest, selectMode, invalidateManifest as evictManifest, assertManifestValid, type ModeSelectOptions, type RouteDockLogger } from './ModeRouter.js'
+import { fetchManifest, selectMode, invalidateManifest as evictManifest, assertManifestValid, assertEndpointActive, type ModeSelectOptions, type RouteDockLogger } from './ModeRouter.js'
 import { X402Client } from './x402Client.js'
 import { MppChargeClient } from './MppChargeClient.js'
 import { MppSessionClient } from './MppSessionClient.js'
@@ -183,6 +183,7 @@ export class RouteDockClient {
   ): Promise<{ manifest: RouteDockManifest; mode: PaymentMode }> {
     const baseUrl = new URL(url).origin
     const manifest = await fetchManifest(baseUrl, this.retryPolicy, this.manifestTimeoutMs, this.expectedPayee)
+    assertEndpointActive(manifest, url, this.logger)
     const mode = selectMode(manifest, options)
     return { manifest, mode }
   }
@@ -277,6 +278,7 @@ export class RouteDockClient {
   async pay(url: string, options?: ModeSelectOptions): Promise<PaymentResult> {
     const baseUrl = new URL(url).origin
     const manifest = await fetchManifest(baseUrl, this.retryPolicy, this.manifestTimeoutMs, this.expectedPayee)
+    assertEndpointActive(manifest, url, this.logger)
     const mode = selectMode(manifest, { ...options, ...(this.logger && { logger: this.logger }) })
 
     await this._checkTrustline(manifest)
@@ -402,6 +404,7 @@ export class RouteDockClient {
   async openSession(url: string, options?: SessionOptions): Promise<SessionHandle> {
     const baseUrl = new URL(url).origin
     const manifest = await fetchManifest(baseUrl, this.retryPolicy, this.manifestTimeoutMs, this.expectedPayee)
+    assertEndpointActive(manifest, url, this.logger)
 
     const mode = options?.mode ?? 'mpp-session'
     if (!manifest.modes.includes(mode)) {
@@ -564,3 +567,4 @@ export class RouteDockClient {
     })
   }
 }
+
