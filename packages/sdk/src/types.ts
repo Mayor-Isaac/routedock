@@ -281,13 +281,41 @@ export interface SessionOptions {
   maxDurationMs?: number
 }
 
-/** Lifecycle events emitted by a SessionHandle. */
-export type SessionEvent = 'session:timeout'
+/**
+ * Lifecycle events emitted by a SessionHandle.
+ *
+ * - 'session:timeout' — the maxDurationMs budget elapsed; auto-close started.
+ * - 'session:close-failed' — that auto-close rejected. The channel may still
+ *   hold collateral, so the caller should retry close() or fall back to
+ *   requestRefund().
+ */
+export type SessionEvent = 'session:timeout' | 'session:close-failed'
 
 /** Payload delivered with the 'session:timeout' event. */
 export interface SessionTimeoutPayload {
   /** The wall-clock budget (ms) that elapsed before auto-close was triggered. */
   maxDurationMs: number
+}
+
+/** Payload delivered with the 'session:close-failed' event. */
+export interface SessionCloseFailedPayload {
+  /** The wall-clock budget (ms) that elapsed before auto-close was triggered. */
+  maxDurationMs: number
+  /**
+   * The rejection thrown by the failed auto-close. Typed `unknown` because the
+   * close path wraps transport, RPC, and channel-state failures, and a rejection
+   * is not guaranteed to be an Error.
+   */
+  error: unknown
+}
+
+/**
+ * Maps each lifecycle event to the payload its listener receives, so on() can
+ * narrow the callback argument per event.
+ */
+export interface SessionEventPayloadMap {
+  'session:timeout': SessionTimeoutPayload
+  'session:close-failed': SessionCloseFailedPayload
 }
 
 /**
@@ -345,9 +373,13 @@ export interface SessionHandle {
   getDisputeStatus(): Promise<DisputeStatus>
   /**
    * Subscribe to a session lifecycle event (e.g. 'session:timeout').
-   * Returns an unsubscribe function.
+   * Returns an unsubscribe function. Throwing inside the listener is caught;
+   * a rejected promise it returns is swallowed the same way.
    */
-  on(event: SessionEvent, listener: (payload: SessionTimeoutPayload) => void): () => void
+  on<E extends SessionEvent>(
+    event: E,
+    listener: (payload: SessionEventPayloadMap[E]) => void,
+  ): () => void
 }
 
 /**
