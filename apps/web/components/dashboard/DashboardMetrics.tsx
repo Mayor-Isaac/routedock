@@ -35,8 +35,14 @@ export function DashboardMetrics({ initialStats }: DashboardMetricsProps) {
   }, [])
 
   useEffect(() => {
-    setNow(Date.now())
-    const initialRefresh = setTimeout(() => void refreshStats(), 0)
+    // `set-state-in-effect` (error in eslint-plugin-react-hooks v6) forbids a
+    // synchronous setState in the effect body, so the first clock tick is
+    // deferred like the initial refresh. `now` stays null on the first paint,
+    // which keeps the server and client markup identical.
+    const initialRefresh = setTimeout(() => {
+      void refreshStats()
+      setNow(Date.now())
+    }, 0)
     const refreshInterval = setInterval(() => void refreshStats(), 10_000)
     const clockInterval = setInterval(() => setNow(Date.now()), 10_000)
     return () => {
