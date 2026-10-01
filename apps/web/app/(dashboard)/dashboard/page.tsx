@@ -1,10 +1,11 @@
 import type { Metadata } from 'next'
+import { networkLabel } from '@/lib/explorer'
 
 export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
   title: 'Dashboard',
-  description: 'Live view of RouteDock payment sessions, transactions, and voucher activity on Stellar testnet.',
+  description: `Live view of RouteDock payment sessions, transactions, and voucher activity on Stellar ${networkLabel()}.`,
 }
 
 import { getSupabaseServerClient } from '@/lib/supabase'
@@ -12,6 +13,7 @@ import { DashboardHeader } from '@/components/layout/DashboardHeader'
 import { DashboardMetrics } from '@/components/dashboard/DashboardMetrics'
 import { SessionTable } from '@/components/dashboard/SessionTable'
 import { TxFeed } from '@/components/dashboard/TxFeed'
+import { RelativeTime } from '@/components/shared/RelativeTime'
 import { VoucherChart } from '@/components/dashboard/VoucherChart'
 import type { DashboardStatsRow } from '@/lib/dashboardMetrics'
 import type { Session, TxLogEntry } from '@/lib/supabase'
@@ -70,7 +72,7 @@ export default async function DashboardPage() {
           </div>
         )}
 
-        {/* Metric cards — server-seeded from the aggregate view, polled client-side */}
+{/* Metric cards — server-seeded from the aggregate view, polled client-side */}
         <DashboardMetrics initialStats={stats} />
 
         {/* Session table + Tx feed */}
