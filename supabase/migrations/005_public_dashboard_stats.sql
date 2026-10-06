@@ -26,4 +26,5 @@ CREATE OR REPLACE VIEW public_dashboard_stats AS
     LIMIT 1
   ) latest ON true;
 
+REVOKE ALL ON public_dashboard_stats FROM anon, authenticated;
 GRANT SELECT ON public_dashboard_stats TO anon, authenticated;
