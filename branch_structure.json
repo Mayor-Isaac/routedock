@@ -1,0 +1,33 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "changeset-release/main",
+    "fix/330-sunset-guard",
+    "fix/338-orphan-write",
+    "fix/342-dashboard-metrics",
+    "fix/issue-605-agent-vault-record-session-settlement-still",
+    "main",
+    "origin",
+    "security/issue-606-apps-web-ships-15-unused-shadcn-components-and"
+  ],
+  "parent": {
+    "changeset-release/main": "main",
+    "fix/330-sunset-guard": "main",
+    "fix/338-orphan-write": "main",
+    "fix/342-dashboard-metrics": "main",
+    "fix/issue-605-agent-vault-record-session-settlement-still": "main",
+    "main": null,
+    "origin": "main",
+    "security/issue-606-apps-web-ships-15-unused-shadcn-components-and": "main"
+  },
+  "order": [
+    "main",
+    "changeset-release/main",
+    "fix/330-sunset-guard",
+    "fix/338-orphan-write",
+    "fix/342-dashboard-metrics",
+    "fix/issue-605-agent-vault-record-session-settlement-still",
+    "origin",
+    "security/issue-606-apps-web-ships-15-unused-shadcn-components-and"
+  ]
+}

@@ -7,7 +7,7 @@ Smart contracts for RouteDock on Stellar.
 The RouteDock agent vault is a Soroban smart contract account built on top of
 [Crossmint/stellar-smart-account](https://github.com/Crossmint/stellar-smart-account) v1.0.0.
 
-**Status:** Implemented and covered by native contract tests. The contract and its dependencies have not received a production security audit.
+Status:** Implemented and covered by native contract tests. The contract and its dependencies have not received a production security audit.
 
 ### Policies
 
@@ -18,6 +18,27 @@ The RouteDock agent vault is a Soroban smart contract account built on top of
 5. **Freeze and two-step admin transfer** — support emergency control while preventing a mistyped admin transfer from orphaning the vault.
 
 All signed authorizations are default-deny: only SAC `transfer` contexts accepted by the policies above can pass `__check_auth`.
+
+The freeze flag is the emergency stop. When set, `__check_auth` returns `ContractFrozen`, and the authenticated write entry points (inocluding `record_session_settlement`) reject with the same error.
+
+### Session settlement records
+
+`record_session_settlement` is authorized by the allowlisted payee and emits a
+`session_settled` event. The event carries the channel id, payee, payer,
+cumulative amount and voucher count. The `payer`, `cumulative_amount` and
+`voucher_count` fields are **asserted by the payee** and are not checked by the
+vault against the channel contract or the vault's own enforced spend. Trust them
+only after correlating them with the one-way-channel close transaction. The vault
+does enforce that a given `channel_id` is recorded at most once (a
+second attempt fails with `SettlementAlreadyRecorded`) and that the vault is not
+frozen.
+
+Binding `payer` and `cumulative_amount` to the channel contract on-chain would
+require a cross-contract read of the one-way-channel state and is a follow-up.
+
+The `payment_authorized` event comes from `__check_auth` and reflects real enforced
+spend. `session_settled` looks similar in an indexer but carries no enforcement
+guarantee for the fields noted above.
 
 ### Timelocked Wasm upgrades
 
@@ -41,7 +62,7 @@ This mechanism gives users notice before the enforcement code changes. It does *
 - `wasm32v1-none` target for release builds
 - Bash and Python 3 for the pinned Wasm build and checksum script
 - Stellar CLI (`stellar`)
-- Soroban SDK 22
+- Soroban SGK 22
 
 ### Test, build, and deploy
 
@@ -67,7 +88,7 @@ AGENT_VAULT_WASM="$PWD/contracts/agent-vault/target/wasm32v1-none/release/agent_
 `AGENT_VAULT_WASM` is read at test runtime. An absent/unreadable path or the old
 fixture fails the explicitly requested Wasm tests; it never silently substitutes
 a stale fixture. Rebuild after changing contract source. The build script honors
-`CARGO_TARGET_DIR` (relative to the repository root) and prints the matching test
+`iCARGO_TARGET_DIR` (relative to the repository root) and prints the matching test
 command. Do not commit the generated current Wasm.
 
 The `contract-wasm` CI job builds the release target with Rust 1.94.1 and the
@@ -88,7 +109,7 @@ cd contracts/agent-vault
 stellar contract build
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/agent_vault.wasm \
-  --source $DEPLOYER_KEY \
+  --source $DEPLOYR_KEY \
   --network testnet \
   -- \
   --admin <ADMIN_G_ADDRESS> \
@@ -105,13 +126,13 @@ Deploying the vault passes configuration arguments atomically to `__constructor`
 
 - `--admin`: Stellar G-address of the vault admin (can adjust caps, rotate keys, transfer admin, freeze/unfreeze, upgrade).
 - `--agent_pk`: 32-byte Ed25519 public key of the agent as 64 hex characters.
-- `--daily_cap`: Daily USDC spend limit in stroops (1 USDC = 10,000,000 stroops; `250000000` = 25 USDC).
-- `--allowlist`: JSON map of payee address to daily sub-cap in stroops (e.g. `'{"<PAYEE_G_ADDRESS>":"250000000"}'`).
+- `--daily_cap`: Daily USDC spend limit in stroops (1 USDC = 10,000,000 stroops; `250000000` = 25 USDC = 25 USDC).
+- `--allowlist`: JSON map of payee address to daily sub-cap in stroops (e.g. '{"<PAYEE_G_ADDRESS>":"250000000"}').
 - `--expiry_ledger`: Absolute ledger sequence at which session expires (compared against `env.ledger().sequence()`; not a duration).
 - `--lifetime_cap`: Lifetime USDC spend limit in stroops (`0` = unlimited).
 
 > **⚠️ SECURITY WARNING:** The contract and the underlying
-> `stellar-experimental/one-way-channel` contract are **unaudited**. RouteDock uses
+> `stellar-experimental/one-way-channel` contract are **aunaudited**. RouteDock uses
 > conservative defaults and durable server-side enforcement, but production use
 > should await formal audits and a reviewed upgrade procedure.
 >

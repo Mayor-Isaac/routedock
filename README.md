@@ -82,7 +82,7 @@ The `agent-vault` contract emits structured events that indexers and Stellar Exp
 | Event | Topics | Data | When |
 |---|---|---|---|
 | `payment_authorized` | `(Symbol, payer: Address, payee: Address)` | `(amount: i128, asset: Address, daily_cumulative: i128)` | Each successful auth pass in `__check_auth` |
-| `session_settled` | `(Symbol, channel_id: Address, payee: Address)` | `(payer: Address, cumulative_amount: i128, voucher_count: u32)` | After channel close, the provider calls `record_session_settlement`, authorized by its own allowlisted payee key |
+| `session_settled` | `(Symbol, channel_id: Address, payee: Address)` | `(payer: Address, cumulative_amount: i128, voucher_count: u32)` | After channel close, the provider calls `record_session_settlement`, authorized by its own allowlisted payee key. **`payer`, `cumulative_amount` and `voucher_count` are asserted by the payee and are not checked on-chain** — verify them against the channel close transaction before trusting them. Rejected while the vault is frozen, and only one record per `channel_id` is allowed. |
 | `upgrade_proposed` | `(Symbol)` | `(new_wasm_hash: BytesN<32>, ready_at_ledger: u32)` | Admin schedules a Wasm change and starts the notice period |
 | `upgrade_cancelled` | `(Symbol)` | `(new_wasm_hash: BytesN<32>, ready_at_ledger: u32)` | Admin cancels a scheduled Wasm change |
 | `upgraded` | `(Symbol)` | `(new_wasm_hash: BytesN<32>)` | A ready Wasm proposal executes successfully |
